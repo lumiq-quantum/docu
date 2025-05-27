@@ -1,6 +1,7 @@
+
 "use client";
 
-import { useState, type ChangeEvent, type FormEvent } from 'react';
+import { useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { UploadCloud, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -20,7 +21,12 @@ import { useToast } from '@/hooks/use-toast';
 import { createProject } from '@/lib/api';
 import type { ProjectResponse } from '@/types/api';
 
-export function UploadProjectDialog({ onUploadSuccess }: { onUploadSuccess?: (project: ProjectResponse) => void }) {
+interface UploadProjectDialogProps {
+  onUploadSuccess?: (project: ProjectResponse) => void;
+  trigger?: ReactNode;
+}
+
+export function UploadProjectDialog({ onUploadSuccess, trigger }: UploadProjectDialogProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -90,9 +96,11 @@ export function UploadProjectDialog({ onUploadSuccess }: { onUploadSuccess?: (pr
       }
     }}>
       <DialogTrigger asChild>
-        <Button>
-          <UploadCloud className="mr-2 h-4 w-4" /> Upload PDF
-        </Button>
+        {trigger || (
+          <Button>
+            <UploadCloud className="mr-2 h-4 w-4" /> Upload PDF
+          </Button>
+        )}
       </DialogTrigger>
       <DialogContent className="sm:max-w-[425px]">
         <form onSubmit={handleSubmit}>
