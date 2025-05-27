@@ -1,3 +1,4 @@
+
 export interface ProjectResponse {
   id: number;
   name: string;
@@ -9,7 +10,7 @@ export interface PageResponse {
   id: number;
   page_number: number;
   text_content: string;
-  project_id?: number; // Added for consistency, though not in original spec for this type
+  generated_form_html: string | null; // Added as per new spec
 }
 
 export interface FormDataCreate {
@@ -63,3 +64,8 @@ export type GeneratedFormFields = Record<string, FormFieldDefinition>;
 
 // For storing form data, key is field name, value is field value
 export type FormValues = Record<string, string | boolean | number | string[]>;
+
+// New type based on OpenAPI spec
+export interface GeneratedHtmlResponse {
+  html_content: string;
+}

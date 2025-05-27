@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useEffect, useState } from 'react';
@@ -5,8 +6,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
-import { generateFormFields as generateFormFieldsAI } from '@/ai/flows/generate-form-fields';
-import { getPageTextContent, saveFormData, getFormData } from '@/lib/api';
+// import { generateFormFields as generateFormFieldsAI } from '@/ai/flows/generate-form-fields'; // Replaced by API call
+import { getPageTextContent, saveFormData, getFormData, generateFormFieldsAPI } from '@/lib/api'; // Added generateFormFieldsAPI
 import type { GeneratedFormFields, FormValues, PageResponse, FormDataResponse } from '@/types/api';
 import { Form } from '@/components/ui/form';
 import { Button } from '@/components/ui/button';
@@ -51,9 +52,10 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
   const queryClient = useQueryClient();
   const [currentFormSchema, setCurrentFormSchema] = useState(z.object({}));
 
-  const { data: pageTextData, isLoading: isLoadingText } = useQuery<PageResponse, Error>({
-    queryKey: ['pageText', projectId, pageNumber],
-    queryKeyHash: `pageText-${projectId}-${pageNumber}`,
+  // Fetch page text content (which might also include pre-generated form HTML)
+  const { data: pageData, isLoading: isLoadingText } = useQuery<PageResponse, Error>({
+    queryKey: ['pageTextAndMeta', projectId, pageNumber], // Changed queryKey for clarity
+    queryKeyHash: `pageTextAndMeta-${projectId}-${pageNumber}`,
     queryFn: () => getPageTextContent(projectId, pageNumber),
     enabled: !!projectId && !!pageNumber,
   });
@@ -67,20 +69,13 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
     queryKey: ['generatedFormFields', projectId, pageNumber],
     queryKeyHash: `generatedFormFields-${projectId}-${pageNumber}`,
     queryFn: async () => {
-      if (!pageTextData?.text_content) {
-        // Return empty or throw, depending on how you want to handle no text
-        return {} as GeneratedFormFields; 
-      }
-      return generateFormFieldsAI({ pageText: pageTextData.text_content });
+      // Assuming generateFormFieldsAPI makes the POST call to /form/generate
+      // and returns the JSON structure for form fields.
+      return generateFormFieldsAPI(projectId, pageNumber);
     },
-    enabled: false, // Initially disabled, triggered manually or by text load
+    enabled: !!pageData, // Enable when pageData (which contains text) is available.
+                         // Or, could be enabled: false and triggered manually if needed.
   });
-
-  useEffect(() => {
-    if (pageTextData?.text_content && !generatedFormFields && !isLoadingFormFields && !formFieldsError) {
-      refetchFormFields();
-    }
-  }, [pageTextData, generatedFormFields, isLoadingFormFields, formFieldsError, refetchFormFields]);
   
   useEffect(() => {
     if (generatedFormFields) {
@@ -97,18 +92,18 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
     queryKey: ['formData', projectId, pageNumber],
     queryKeyHash: `formData-${projectId}-${pageNumber}`,
     queryFn: () => getFormData(projectId, pageNumber),
-    enabled: !!projectId && !!pageNumber && !!generatedFormFields, // Fetch after form fields are generated
+    enabled: !!projectId && !!pageNumber && !!generatedFormFields,
     onSuccess: (data) => {
       if (data?.data) {
         try {
           const parsedData = JSON.parse(data.data);
-          form.reset(parsedData); // Populate form with saved data
+          form.reset(parsedData);
         } catch (e) {
           console.error("Failed to parse saved form data", e);
           toast({ title: "Error", description: "Could not load previously saved form data.", variant: "destructive" });
         }
       } else {
-        form.reset({}); // Reset to empty if no saved data
+        form.reset({});
       }
     },
   });
@@ -155,13 +150,15 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
           <Alert variant="destructive">
             <FileWarning className="h-4 w-4" />
             <AlertTitle>Error Generating Form</AlertTitle>
-            <AlertDescription>{formFieldsError.message || "Could not generate form fields."}</AlertDescription>
+            <AlertDescription>{formFieldsError.message || "Could not generate form fields from API."}</AlertDescription>
           </Alert>
         </CardContent>
       </Card>
     );
   }
   
+  // Check if pageData has text_content before declaring no form fields.
+  // The form generation might depend on this text.
   if (!generatedFormFields || Object.keys(generatedFormFields).length === 0) {
     return (
       <Card className="h-full">
@@ -169,8 +166,10 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
         <CardContent className="flex flex-col items-center justify-center h-full text-muted-foreground p-6">
             <Wand2 className="w-16 h-16 mb-4" />
             <p className="text-lg font-medium">No form fields could be generated.</p>
-            <p className="text-sm text-center">This might happen if the page has no detectable form elements or if the AI could not process the text.</p>
-            {!pageTextData?.text_content && <p className="text-sm mt-2">Ensure page text content is available.</p>}
+            <p className="text-sm text-center">
+              This might happen if the page has no detectable form elements or if the AI could not process the text.
+            </p>
+            {!pageData?.text_content && <p className="text-sm mt-2">Page text content might be missing.</p>}
         </CardContent>
       </Card>
     );
