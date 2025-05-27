@@ -1,9 +1,8 @@
+
 import type { Metadata } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 import './globals.css';
-import { ThemeProvider } from '@/components/providers/theme-provider';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Toaster } from '@/components/ui/toaster';
+import { AppProviders } from '@/components/providers/AppProviders';
 import AppShell from '@/components/layout/AppShell';
 
 const geistSans = Geist({
@@ -21,8 +20,6 @@ export const metadata: Metadata = {
   description: 'Transform PDFs into Dynamic Forms and Chatbots',
 };
 
-const queryClient = new QueryClient();
-
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -31,14 +28,11 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <QueryClientProvider client={queryClient}>
-          <ThemeProvider defaultTheme="light" storageKey="formulateai-theme">
-            <AppShell>
-              {children}
-            </AppShell>
-            <Toaster />
-          </ThemeProvider>
-        </QueryClientProvider>
+        <AppProviders>
+          <AppShell>
+            {children}
+          </AppShell>
+        </AppProviders>
       </body>
     </html>
   );

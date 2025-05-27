@@ -23,6 +23,7 @@ import { usePathname } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { listProjects } from '@/lib/api';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import type { ProjectResponse } from '@/types/api';
 
 interface AppShellProps {
   children: ReactNode;
@@ -91,7 +92,7 @@ function SidebarNavigation() {
               </SidebarMenu>
             </ScrollArea>
           )}
-        </SidebarMenu>
+        </div>
       </SidebarContent>
       <SidebarFooter className="p-2">
         <ThemeToggle />
