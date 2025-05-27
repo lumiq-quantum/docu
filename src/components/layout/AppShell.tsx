@@ -1,6 +1,7 @@
+
 "use client";
 
-import type { ReactNode } from 'react';
+import { type ReactNode, useState, useEffect } from 'react'; // Added useState, useEffect
 import Link from 'next/link';
 import { Home, Settings, PlusCircle, FileText, Trash2 } from 'lucide-react';
 import {
@@ -29,6 +30,8 @@ interface AppShellProps {
   children: ReactNode;
 }
 
+const SIDEBAR_COOKIE_NAME = "sidebar_state"; // Matches the cookie name used in SidebarProvider
+
 function SidebarNavigation() {
   const { data: projects, isLoading } = useQuery<ProjectResponse[], Error>({
     queryKey: ['projects'],
@@ -50,8 +53,8 @@ function SidebarNavigation() {
       <SidebarContent className="p-2">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton 
-              asChild 
+            <SidebarMenuButton
+              asChild
               isActive={pathname === '/'}
               tooltip="Dashboard"
             >
@@ -103,24 +106,35 @@ function SidebarNavigation() {
 
 
 export default function AppShell({ children }: AppShellProps) {
-  // Check if cookies are enabled for sidebar state persistence
-  let defaultOpen = true;
-  if (typeof document !== 'undefined') {
-    try {
-      // Attempt to use cookies to check if they are enabled
-      document.cookie = "testcookie; SameSite=Lax";
-      defaultOpen = document.cookie.indexOf("testcookie") !== -1;
-      // Clean up the test cookie
-      document.cookie = "testcookie=; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax";
-    } catch (e) {
-      // Cookies are likely disabled or an error occurred
-      defaultOpen = false; // Fallback if cookies are disabled (e.g. incognito with strict settings)
-    }
-  }
+  // Initialize with a consistent value for SSR and initial client render.
+  // This default (true) will be used before the cookie is checked on the client.
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
+  useEffect(() => {
+    // This effect runs only on the client after hydration
+    let initialOpenState = true; // Default if cookie not found/readable or invalid
+    try {
+      const cookieValue = document.cookie
+        .split('; ')
+        .find(row => row.startsWith(`${SIDEBAR_COOKIE_NAME}=`))
+        ?.split('=')[1];
+
+      if (cookieValue === 'false') {
+        initialOpenState = false;
+      } else if (cookieValue === 'true') {
+        // Explicitly true, or if cookieValue is undefined (cookie not set), keep initialOpenState as true
+        initialOpenState = true;
+      }
+      // If cookieValue is undefined (cookie doesn't exist), initialOpenState remains as initialized (true)
+    } catch (e) {
+      console.error("Error reading sidebar cookie in AppShell:", e);
+      // Fallback to the default state if cookie reading fails, which is `true`
+    }
+    setIsSidebarOpen(initialOpenState);
+  }, []); // Empty dependency array: run once on mount
 
   return (
-    <SidebarProvider defaultOpen={defaultOpen} >
+    <SidebarProvider open={isSidebarOpen} onOpenChange={setIsSidebarOpen}>
       <Sidebar collapsible="icon" className="border-r border-sidebar-border">
         <SidebarNavigation />
       </Sidebar>
