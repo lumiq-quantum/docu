@@ -16,6 +16,18 @@ const nextConfig: NextConfig = {
         port: '',
         pathname: '/**',
       },
+      { // Added for potential bot avatar placeholders if not local
+        protocol: 'https',
+        hostname: 'cdn.jsdelivr.net', 
+        port: '',
+        pathname: '/**',
+      },
+      { // Added for potential bot avatar placeholders if not local
+        protocol: 'https',
+        hostname: 'via.placeholder.com',
+        port: '',
+        pathname: '/**',
+      }
     ],
   },
 };
