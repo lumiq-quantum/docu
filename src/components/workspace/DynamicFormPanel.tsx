@@ -1,20 +1,14 @@
 
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import * as z from 'zod';
-// import { generateFormFields as generateFormFieldsAI } from '@/ai/flows/generate-form-fields'; // Replaced by API call
-import { getPageTextContent, saveFormData, getFormData, generateFormFieldsAPI } from '@/lib/api'; // Added generateFormFieldsAPI
-import type { GeneratedFormFields, FormValues, PageResponse, FormDataResponse } from '@/types/api';
-import { Form } from '@/components/ui/form';
+import { getGeneratedFormHtmlAPI, saveFormData, getFormData } from '@/lib/api';
+import type { GeneratedHtmlResponse, FormDataResponse, FormValues, FormDataCreate } from '@/types/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { FormRenderer } from './FormRenderer';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Save, FileWarning, Wand2 } from 'lucide-react';
 import { ScrollArea } from '../ui/scroll-area';
@@ -24,94 +18,50 @@ interface DynamicFormPanelProps {
   pageNumber: number;
 }
 
-// Create a dynamic Zod schema based on generated fields
-const createFormSchema = (fields: GeneratedFormFields) => {
-  const shape: Record<string, z.ZodTypeAny> = {};
-  Object.entries(fields).forEach(([name, def]) => {
-    const normalizedName = name.replace(/\s+/g, '_').toLowerCase();
-    switch (def.type) {
-      case 'text':
-      case 'multi-line text':
-      case 'radio':
-      case 'dropdown':
-        shape[normalizedName] = z.string().optional();
-        break;
-      case 'checkbox':
-        shape[normalizedName] = z.boolean().optional();
-        break;
-      default:
-        shape[normalizedName] = z.any().optional();
-    }
-  });
-  return z.object(shape);
-};
-
-
 export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [currentFormSchema, setCurrentFormSchema] = useState(z.object({}));
+  const [initialFormData, setInitialFormData] = useState<FormValues | null>(null);
 
-  // Fetch page text content (which might also include pre-generated form HTML)
-  const { data: pageData, isLoading: isLoadingText } = useQuery<PageResponse, Error>({
-    queryKey: ['pageTextAndMeta', projectId, pageNumber], // Changed queryKey for clarity
-    queryKeyHash: `pageTextAndMeta-${projectId}-${pageNumber}`,
-    queryFn: () => getPageTextContent(projectId, pageNumber),
+  const { 
+    data: htmlData, 
+    isLoading: isLoadingHtml, 
+    error: htmlError 
+  } = useQuery<GeneratedHtmlResponse, Error>({
+    queryKey: ['generatedFormHtml', projectId, pageNumber],
+    queryKeyHash: `generatedFormHtml-${projectId}-${pageNumber}`,
+    queryFn: () => getGeneratedFormHtmlAPI(projectId, pageNumber),
     enabled: !!projectId && !!pageNumber,
   });
 
   const { 
-    data: generatedFormFields, 
-    isLoading: isLoadingFormFields,
-    error: formFieldsError,
-    refetch: refetchFormFields,
-  } = useQuery<GeneratedFormFields, Error>({
-    queryKey: ['generatedFormFields', projectId, pageNumber],
-    queryKeyHash: `generatedFormFields-${projectId}-${pageNumber}`,
-    queryFn: async () => {
-      // Assuming generateFormFieldsAPI makes the POST call to /form/generate
-      // and returns the JSON structure for form fields.
-      return generateFormFieldsAPI(projectId, pageNumber);
-    },
-    enabled: !!pageData, // Enable when pageData (which contains text) is available.
-                         // Or, could be enabled: false and triggered manually if needed.
-  });
-  
-  useEffect(() => {
-    if (generatedFormFields) {
-      setCurrentFormSchema(createFormSchema(generatedFormFields));
-    }
-  }, [generatedFormFields]);
-
-  const form = useForm<FormValues>({
-    resolver: zodResolver(currentFormSchema),
-    defaultValues: {},
-  });
-  
-  const { data: savedFormData, isLoading: isLoadingSavedData } = useQuery<FormDataResponse | null, Error>({
+    data: savedFormData, 
+    isLoading: isLoadingSavedData,
+    error: savedDataError
+  } = useQuery<FormDataResponse | null, Error>({
     queryKey: ['formData', projectId, pageNumber],
     queryKeyHash: `formData-${projectId}-${pageNumber}`,
     queryFn: () => getFormData(projectId, pageNumber),
-    enabled: !!projectId && !!pageNumber && !!generatedFormFields,
+    enabled: !!htmlData, // Only fetch saved data once HTML structure is potentially known
     onSuccess: (data) => {
       if (data?.data) {
         try {
           const parsedData = JSON.parse(data.data);
-          form.reset(parsedData);
+          setInitialFormData(parsedData);
+          // Note: We can't easily use form.reset with dangerouslySetInnerHTML.
+          // The HTML itself would need to be manipulated or re-rendered with values.
+          // For now, this data is fetched but not automatically repopulating the raw HTML form.
+          // This would require more complex DOM manipulation or a different strategy.
         } catch (e) {
           console.error("Failed to parse saved form data", e);
-          toast({ title: "Error", description: "Could not load previously saved form data.", variant: "destructive" });
+          toast({ title: "Error", description: "Could not load previously saved form data into HTML form.", variant: "destructive" });
         }
-      } else {
-        form.reset({});
       }
     },
   });
 
-  const saveMutation = useMutation<FormDataResponse, Error, FormValues>({
-    mutationFn: async (dataToSave) => {
-      return saveFormData(projectId, pageNumber, { data: JSON.stringify(dataToSave) });
-    },
+  const saveMutation = useMutation<FormDataResponse, Error, FormDataCreate>({
+    mutationFn: (dataToSave) => saveFormData(projectId, pageNumber, dataToSave),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['formData', projectId, pageNumber] });
       toast({ title: "Form Saved", description: "Your responses have been saved successfully." });
@@ -121,11 +71,72 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
     },
   });
 
-  const onSubmit = (data: FormValues) => {
-    saveMutation.mutate(data);
-  };
+  const handleFormSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const formValues: FormValues = {};
+    
+    formData.forEach((value, key) => {
+      // Basic handling for multiple values (e.g., checkboxes with same name)
+      if (Object.prototype.hasOwnProperty.call(formValues, key)) {
+        const existingValue = formValues[key];
+        if (Array.isArray(existingValue)) {
+          existingValue.push(value as string);
+        } else {
+          formValues[key] = [existingValue as string, value as string];
+        }
+      } else {
+         // For checkboxes that are not checked, FormData doesn't include them.
+         // If the element is a checkbox and not in formData, its value is false.
+         const element = event.currentTarget.elements.namedItem(key);
+         if (element instanceof HTMLInputElement && element.type === 'checkbox') {
+            formValues[key] = element.checked;
+         } else {
+            formValues[key] = value as string;
+         }
+      }
+    });
 
-  const isLoading = isLoadingText || isLoadingFormFields || isLoadingSavedData;
+    // Ensure all checkbox values are correctly represented (true/false)
+    // This requires knowing which fields are checkboxes if they are not submitted when unchecked.
+    // This is a limitation when working with raw HTML forms. A more robust solution
+    // might involve inspecting event.currentTarget.elements.
+    Array.from(event.currentTarget.elements).forEach(element => {
+        if (element instanceof HTMLInputElement && element.type === 'checkbox' && element.name) {
+            if (!formData.has(element.name)) { // If checkbox was unchecked, it won't be in formData
+                formValues[element.name] = false;
+            } else { // If it was checked, FormData gives its 'value' attribute, ensure boolean true
+                formValues[element.name] = true;
+            }
+        }
+    });
+
+
+    saveMutation.mutate({ data: JSON.stringify(formValues) });
+  };
+  
+  // Effect to apply initial form data to the raw HTML form
+  // This is a bit hacky and might not cover all cases perfectly.
+  useEffect(() => {
+    if (htmlData?.html_content && initialFormData) {
+      const formElement = document.getElementById(`dynamic-form-${projectId}-${pageNumber}`);
+      if (formElement) {
+        Object.entries(initialFormData).forEach(([name, value]) => {
+          const inputElement = formElement.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+          if (inputElement) {
+            if (inputElement.type === 'checkbox' || inputElement.type === 'radio') {
+              (inputElement as HTMLInputElement).checked = !!value;
+            } else {
+              inputElement.value = String(value);
+            }
+          }
+        });
+      }
+    }
+  }, [htmlData, initialFormData, projectId, pageNumber]);
+
+
+  const isLoading = isLoadingHtml || isLoadingSavedData;
 
   if (isLoading) {
     return (
@@ -142,34 +153,38 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
     );
   }
   
-  if (formFieldsError) {
+  if (htmlError) {
      return (
       <Card className="h-full">
         <CardHeader><CardTitle>Dynamic Form</CardTitle></CardHeader>
         <CardContent>
           <Alert variant="destructive">
             <FileWarning className="h-4 w-4" />
-            <AlertTitle>Error Generating Form</AlertTitle>
-            <AlertDescription>{formFieldsError.message || "Could not generate form fields from API."}</AlertDescription>
+            <AlertTitle>Error Loading Form HTML</AlertTitle>
+            <AlertDescription>{htmlError.message || "Could not load form HTML from API."}</AlertDescription>
           </Alert>
         </CardContent>
       </Card>
     );
   }
+   if (savedDataError) { // Handle error for loading saved data separately
+    toast({
+      title: "Warning",
+      description: `Could not load previously saved form data: ${savedDataError.message}`,
+      variant: "default", // Not destructive, as form can still be used
+    });
+  }
   
-  // Check if pageData has text_content before declaring no form fields.
-  // The form generation might depend on this text.
-  if (!generatedFormFields || Object.keys(generatedFormFields).length === 0) {
+  if (!htmlData || !htmlData.html_content) {
     return (
       <Card className="h-full">
         <CardHeader><CardTitle>Dynamic Form</CardTitle></CardHeader>
         <CardContent className="flex flex-col items-center justify-center h-full text-muted-foreground p-6">
             <Wand2 className="w-16 h-16 mb-4" />
-            <p className="text-lg font-medium">No form fields could be generated.</p>
+            <p className="text-lg font-medium">No form content available.</p>
             <p className="text-sm text-center">
-              This might happen if the page has no detectable form elements or if the AI could not process the text.
+              The API did not return any HTML content for the form on this page.
             </p>
-            {!pageData?.text_content && <p className="text-sm mt-2">Page text content might be missing.</p>}
         </CardContent>
       </Card>
     );
@@ -180,11 +195,12 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
       <CardHeader>
         <CardTitle>Dynamic Form - Page {pageNumber}</CardTitle>
       </CardHeader>
-      <Form {...form}>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col flex-grow">
+      {/* The form submission logic is now handled by the onSubmit on this form tag */}
+      <form onSubmit={handleFormSubmit} className="flex flex-col flex-grow" id={`dynamic-form-${projectId}-${pageNumber}`}>
           <ScrollArea className="flex-grow">
             <CardContent className="p-6">
-              <FormRenderer formFields={generatedFormFields} control={form.control} disabled={saveMutation.isPending} />
+              {/* Render the HTML fetched from the API */}
+              <div dangerouslySetInnerHTML={{ __html: htmlData.html_content }} />
             </CardContent>
           </ScrollArea>
           <CardFooter className="border-t p-6">
@@ -201,7 +217,6 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
             </Button>
           </CardFooter>
         </form>
-      </Form>
     </Card>
   );
 }
