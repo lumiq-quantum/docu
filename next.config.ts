@@ -30,6 +30,16 @@ const nextConfig: NextConfig = {
       }
     ],
   },
+  webpack: (config, { isServer }) => {
+    // Fix for 'canvas' module not found error with pdfjs-dist
+    // See https://github.com/mozilla/pdf.js/issues/17086
+    // And https://github.com/wojtekmaj/react-pdf/issues/1864
+    if (!isServer) { // Apply this rule only for client-side bundles
+      config.externals.push('canvas');
+    }
+    // Important: return the modified config
+    return config;
+  },
 };
 
 export default nextConfig;

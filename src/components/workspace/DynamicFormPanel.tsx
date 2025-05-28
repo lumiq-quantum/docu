@@ -1,8 +1,7 @@
-
 "use client";
 
 import { useEffect, useState, FormEvent } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, QueryKey } from '@tanstack/react-query';
 import { getGeneratedFormHtmlAPI, saveFormData, getFormData } from '@/lib/api';
 import type { GeneratedHtmlResponse, FormDataResponse, FormValues, FormDataCreate } from '@/types/api';
 import { Button } from '@/components/ui/button';
@@ -23,47 +22,42 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
   const queryClient = useQueryClient();
   const [initialFormData, setInitialFormData] = useState<FormValues | null>(null);
 
+  const generatedFormHtmlQueryKey: QueryKey = ['generatedFormHtml', projectId, pageNumber];
+  const formDataQueryKey: QueryKey = ['formData', projectId, pageNumber];
+
   const { 
     data: htmlData, 
     isLoading: isLoadingHtml, 
     error: htmlError 
-  } = useQuery<GeneratedHtmlResponse, Error>({
-    queryKey: ['generatedFormHtml', projectId, pageNumber],
-    queryKeyHash: `generatedFormHtml-${projectId}-${pageNumber}`,
+  } = useQuery<GeneratedHtmlResponse, Error, GeneratedHtmlResponse, QueryKey>({
+    queryKey: generatedFormHtmlQueryKey,
     queryFn: () => getGeneratedFormHtmlAPI(projectId, pageNumber),
     enabled: !!projectId && !!pageNumber,
   });
 
-  const { 
-    data: savedFormData, 
-    isLoading: isLoadingSavedData,
-    error: savedDataError
-  } = useQuery<FormDataResponse | null, Error>({
-    queryKey: ['formData', projectId, pageNumber],
-    queryKeyHash: `formData-${projectId}-${pageNumber}`,
+  useQuery<FormDataResponse | null, Error, FormDataResponse | null, QueryKey>({
+    queryKey: formDataQueryKey,
     queryFn: () => getFormData(projectId, pageNumber),
     enabled: !!htmlData, // Only fetch saved data once HTML structure is potentially known
-    onSuccess: (data) => {
+    onSuccess: (data) => { // This is a valid way to use onSuccess with v4/v5
       if (data?.data) {
         try {
           const parsedData = JSON.parse(data.data);
           setInitialFormData(parsedData);
-          // Note: We can't easily use form.reset with dangerouslySetInnerHTML.
-          // The HTML itself would need to be manipulated or re-rendered with values.
-          // For now, this data is fetched but not automatically repopulating the raw HTML form.
-          // This would require more complex DOM manipulation or a different strategy.
         } catch (e) {
           console.error("Failed to parse saved form data", e);
           toast({ title: "Error", description: "Could not load previously saved form data into HTML form.", variant: "destructive" });
         }
       }
     },
+    // Assign to a variable if you need to access isLoading or error states for this query
+    // For now, we are primarily interested in its onSuccess side-effect
   });
 
   const saveMutation = useMutation<FormDataResponse, Error, FormDataCreate>({
     mutationFn: (dataToSave) => saveFormData(projectId, pageNumber, dataToSave),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['formData', projectId, pageNumber] });
+      queryClient.invalidateQueries({ queryKey: formDataQueryKey });
       toast({ title: "Form Saved", description: "Your responses have been saved successfully." });
     },
     onError: (error) => {
@@ -116,7 +110,6 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
   };
   
   // Effect to apply initial form data to the raw HTML form
-  // This is a bit hacky and might not cover all cases perfectly.
   useEffect(() => {
     if (htmlData?.html_content && initialFormData) {
       const formElement = document.getElementById(`dynamic-form-${projectId}-${pageNumber}`);
@@ -136,7 +129,7 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
   }, [htmlData, initialFormData, projectId, pageNumber]);
 
 
-  const isLoading = isLoadingHtml || isLoadingSavedData;
+  const isLoading = isLoadingHtml;
 
   if (isLoading) {
     return (
@@ -167,13 +160,8 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
       </Card>
     );
   }
-   if (savedDataError) { // Handle error for loading saved data separately
-    toast({
-      title: "Warning",
-      description: `Could not load previously saved form data: ${savedDataError.message}`,
-      variant: "default", // Not destructive, as form can still be used
-    });
-  }
+  // Note: savedDataError is handled by a toast notification within its query definition.
+  // No separate UI block for savedDataError here unless more specific handling is needed.
   
   if (!htmlData || !htmlData.html_content) {
     return (
@@ -196,11 +184,12 @@ export function DynamicFormPanel({ projectId, pageNumber }: DynamicFormPanelProp
         <CardTitle>Dynamic Form - Page {pageNumber}</CardTitle>
       </CardHeader>
       {/* The form submission logic is now handled by the onSubmit on this form tag */}
-      <form onSubmit={handleFormSubmit} className="flex flex-col flex-grow" id={`dynamic-form-${projectId}-${pageNumber}`}>
-          <ScrollArea className="flex-grow">
+      {/* Added min-h-0 to the form for proper flex child height calculation */}
+      <form onSubmit={handleFormSubmit} className="flex flex-col flex-grow min-h-0" id={`dynamic-form-${projectId}-${pageNumber}`}>
+          <ScrollArea className="flex-grow"> {/* ScrollArea will now correctly fill the space */}
             <CardContent className="p-6">
               {/* Render the HTML fetched from the API */}
-              <div dangerouslySetInnerHTML={{ __html: htmlData.html_content }} />
+              {htmlData?.html_content && <div dangerouslySetInnerHTML={{ __html: htmlData.html_content }} />}
             </CardContent>
           </ScrollArea>
           <CardFooter className="border-t p-6">

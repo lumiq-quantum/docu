@@ -1,4 +1,3 @@
-
 import type {
   ProjectResponse,
   PageResponse,
@@ -72,9 +71,15 @@ export async function listProjectPages(projectId: number): Promise<PageResponse[
   return handleResponse<PageResponse[]>(response);
 }
 
+// We will use it to fetch text content. Actual PDF visual display is not directly supported by this endpoint.
 export async function getPageTextContent(projectId: number, pageNumber: number): Promise<PageResponse> {
   const response = await fetch(`${API_BASE_URL}/projects/${projectId}/pages/${pageNumber}/text`);
   return handleResponse<PageResponse>(response);
+}
+
+export async function getPdfPageDisplayUrl(projectId: number, pageNumber: number): Promise<string> {
+  // This function will now return the direct URL to the PDF content.
+  return `${API_BASE_URL}/projects/${projectId}/pages/${pageNumber}/pdf`;
 }
 
 // New API function to trigger form field generation
