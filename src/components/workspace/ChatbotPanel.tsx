@@ -27,7 +27,7 @@ interface DisplayChatMessage extends ChatMessage {
 type SaveMessageMutationInput = {
   messageText: string;
   tempId: string; // The _tempId of the message being saved
-  role: 'user' | 'model'; // To know which message (user or AI) this save pertains to
+  // role: 'user' | 'model'; // Role is removed as this mutation now only handles user messages
 };
 
 export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
@@ -65,11 +65,11 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
       const newSessionId = crypto.randomUUID();
       setSessionId(newSessionId);
       console.error("Error fetching project data for chat session ID:", projectError);
-      toast({ title: "Error", description: `Could not load project data: ${projectError.message}. Using temporary session ID: ${newSessionId}.`, variant: "destructive" });
+      toast({ title: "Error", description: `Could not load project data: ${projectError.message}. Using temporary session ID. Chat history may not be saved.`, variant: "destructive" });
     }
   }, [projectError, toast]);
 
-  const { data: chatHistoryData, isLoading: isLoadingHistory, error: historyError } = useQuery<ChatHistoryResponse, Error, ChatHistoryResponse, readonly ['chatHistory', string | null]>({
+  const { data: chatHistoryData, isLoading: isLoadingHistory, error: historyError, refetch: refetchChatHistory } = useQuery<ChatHistoryResponse, Error, ChatHistoryResponse, readonly ['chatHistory', string | null]>({
     queryKey: ['chatHistory', sessionId] as const,
     queryFn: async (): Promise<ChatHistoryResponse> => {
       if (!sessionId) {
@@ -111,7 +111,7 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
   const saveMessageMutation = useMutation<ChatMessageResponse, Error, SaveMessageMutationInput>({
     mutationFn: (data) => {
       if (!sessionId) return Promise.reject(new Error("Session ID not available for saving message."));
-      return postChatMessage(sessionId, data.messageText);
+      return postChatMessage(sessionId, data.messageText); // Only sends user message
     },
     onSuccess: (savedMessageBackend, variables) => {
       queryClient.setQueryData<ChatHistoryResponse | undefined>(['chatHistory', sessionId], (oldData) => {
@@ -119,9 +119,10 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
         const updatedMessages = oldData.messages.map(msg => {
           const displayMsg = msg as DisplayChatMessage;
           if (displayMsg._tempId === variables.tempId) {
+            // Update the user's message with data from backend
             return {
-              id: savedMessageBackend.id.toString(), // Ensure ID is string if ChatMessage expects string
-              role: variables.role,
+              id: savedMessageBackend.id.toString(),
+              role: 'user', // Hardcoded to 'user' as this mutation is for user messages
               content: savedMessageBackend.message,
               timestamp: savedMessageBackend.created_at,
             } as ChatMessage;
@@ -130,86 +131,47 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
         });
         return { ...oldData, messages: updatedMessages };
       });
-      scrollToBottom();
+      // Invalidate chat history to refetch and get AI's response
+      queryClient.invalidateQueries({ queryKey: ['chatHistory', sessionId] });
+      scrollToBottom(); // Scroll after optimistic update / initial save
     },
     onError: (error, variables) => {
-      toast({ title: "Error Saving Message", description: `Failed to save ${variables.role} message: ${error.message}`, variant: "destructive" });
+      toast({ title: "Error Saving Message", description: `Failed to save user message: ${error.message}`, variant: "destructive" });
       queryClient.setQueryData<ChatHistoryResponse | undefined>(['chatHistory', sessionId], (oldData) => {
         if (!oldData) return oldData;
+        // Remove the optimistic message that failed to save
         const filteredMessages = oldData.messages.filter(msg => (msg as DisplayChatMessage)._tempId !== variables.tempId);
         return { ...oldData, messages: filteredMessages };
       });
     },
   });
 
-  // Placeholder for actual AI response generation logic
-  const generateAiResponse = async (question: string, currentProjectId: number, currentSessionId: string): Promise<{ answer: string }> => {
-    console.log(`AI generating response for: "${question}" in project ${currentProjectId} session ${currentSessionId}`);
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate delay
-    return { answer: `AI mock response to: "${question}"` };
-  };
-
-  // Mutation to handle sending a user message and getting an AI response
-  const aiResponseMutation = useMutation<{ answer: string }, Error, string>({
-    mutationFn: async (question: string) => {
-      if (!sessionId) throw new Error("Session ID not available for AI response.");
-
-      const tempUserMessageId = `temp-user-${crypto.randomUUID()}`;
-      const userMessageForDisplay: DisplayChatMessage = {
-        _tempId: tempUserMessageId,
-        id: tempUserMessageId, // Temporary ID for display, will be replaced by backend ID on save
-        role: 'user',
-        content: question,
-        timestamp: new Date().toISOString(),
-      };
-
-      queryClient.setQueryData<ChatHistoryResponse | undefined>(['chatHistory', sessionId], (oldData) => {
-        const messages = oldData?.messages || [];
-        const sessionInfo = oldData?.session || { id: sessionId, title: 'Chat Session', created_at: new Date().toISOString() }; 
-        return { session: sessionInfo, messages: [...messages, userMessageForDisplay] };
-      });
-      scrollToBottom();
-
-      // Save user message to backend
-      saveMessageMutation.mutate({ messageText: question, tempId: tempUserMessageId, role: 'user' });
-
-      // Get AI response
-      const aiResult = await generateAiResponse(question, projectId, sessionId);
-      return aiResult;
-    },
-    onSuccess: (aiResult) => {
-      if (!sessionId) return; // Should be caught by mutationFn check
-
-      const tempAiMessageId = `temp-ai-${crypto.randomUUID()}`;
-      const aiMessageForDisplay: DisplayChatMessage = {
-        _tempId: tempAiMessageId,
-        id: tempAiMessageId, // Temporary ID for display
-        role: 'model', // Use 'model' for AI responses
-        content: aiResult.answer,
-        timestamp: new Date().toISOString(),
-      };
-
-      queryClient.setQueryData<ChatHistoryResponse | undefined>(['chatHistory', sessionId], (oldData) => {
-        const messages = oldData?.messages || [];
-        const sessionInfo = oldData?.session || { id: sessionId, title: 'Chat Session', created_at: new Date().toISOString() }; // Fallback session info
-        return { session: sessionInfo, messages: [...messages, aiMessageForDisplay] };
-      });
-      scrollToBottom();
-
-      // Save AI message to backend
-      saveMessageMutation.mutate({ messageText: aiResult.answer, tempId: tempAiMessageId, role: 'model' });
-    },
-    onError: (error: Error) => {
-      toast({ title: "AI Error", description: error.message || "Failed to get AI response.", variant: "destructive" });
-    },
-  });
-
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userInput.trim() || aiResponseMutation.isPending || !sessionId || isLoadingProject) return;
+    if (!userInput.trim() || saveMessageMutation.isPending || !sessionId || isLoadingProject) return;
+    
     const currentInput = userInput.trim();
     setUserInput('');
-    aiResponseMutation.mutate(currentInput);
+
+    const tempUserMessageId = `temp-user-${crypto.randomUUID()}`;
+    const userMessageForDisplay: DisplayChatMessage = {
+      _tempId: tempUserMessageId,
+      id: tempUserMessageId, 
+      role: 'user',
+      content: currentInput,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Optimistically add user message to UI
+    queryClient.setQueryData<ChatHistoryResponse | undefined>(['chatHistory', sessionId], (oldData) => {
+      const messages = oldData?.messages || [];
+      const sessionInfo = oldData?.session || { id: sessionId!, title: 'Chat Session', created_at: new Date().toISOString() }; 
+      return { session: sessionInfo, messages: [...messages, userMessageForDisplay] };
+    });
+    scrollToBottom();
+
+    // Send user message to backend
+    saveMessageMutation.mutate({ messageText: currentInput, tempId: tempUserMessageId });
   };
 
   // Combined loading state for initial setup (project loading OR session ID not yet set AND no project error)
@@ -233,7 +195,7 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
   }
 
   // Loading state for chat history, only if session ID is available and not initial loading
-  if (isLoadingHistory && sessionId) {
+  if (isLoadingHistory && sessionId && !chatMessages.length) { // Show full skeleton only if history is loading AND no messages yet
     return (
       <Card className="h-full flex flex-col">
         <CardHeader><CardTitle>Chatbot</CardTitle></CardHeader>
@@ -303,14 +265,8 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
                 </div>
               </div>
             ))}
-            {aiResponseMutation.isPending && (
-              <div className="flex items-end gap-2 max-w-[85%] mr-auto">
-                <Avatar className="h-8 w-8"><AvatarImage src="/placeholder-bot.png" /><AvatarFallback><Bot className="h-4 w-4" /></AvatarFallback></Avatar>
-                <div className="rounded-lg px-3 py-2 text-sm shadow bg-muted text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                </div>
-              </div>
-            )}
+            {/* Removed AI response pending loader (aiResponseMutation.isPending) */}
+            {/* isLoadingHistory will cover loading states during refetch */}
           </div>
         </ScrollArea>
       </CardContent>
@@ -321,15 +277,15 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
             placeholder={sessionId ? "Ask about the document..." : "Initializing chat..."}
             value={userInput}
             onChange={(e) => setUserInput(e.target.value)}
-            disabled={aiResponseMutation.isPending || saveMessageMutation.isPending || !sessionId || isLoadingProject}
+            disabled={saveMessageMutation.isPending || !sessionId || isLoadingProject || isLoadingHistory}
             className="flex-grow"
           />
           <Button 
             type="submit" 
             size="icon" 
-            disabled={aiResponseMutation.isPending || saveMessageMutation.isPending || !userInput.trim() || !sessionId || isLoadingProject}
+            disabled={saveMessageMutation.isPending || !userInput.trim() || !sessionId || isLoadingProject || isLoadingHistory}
           >
-            {aiResponseMutation.isPending ? <Loader2 className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+            {saveMessageMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             <span className="sr-only">Send</span>
           </Button>
         </form>
