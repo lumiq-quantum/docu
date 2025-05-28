@@ -8,6 +8,7 @@ import type {
   HTTPValidationError,
   GeneratedFormFields, // Added for the new API endpoint
   GeneratedHtmlResponse, // Added for the new API endpoint
+  ChatHistoryResponse, // Added this line
 } from '@/types/api';
 import { API_BASE_URL } from '@/lib/config';
 
@@ -122,22 +123,29 @@ export async function getFormData(projectId: number, pageNumber: number): Promis
   }
 }
 
-// Modified to ensure only ChatMessageCreate properties are sent
-export async function postChatMessage(projectId: number, messageData: ChatMessageCreate): Promise<ChatMessageResponse> {
-  // Ensure only properties of ChatMessageCreate are sent
-  const { message, is_user_message } = messageData;
-  const payload: ChatMessageCreate = { message, is_user_message };
+// Modified to use FormData and a session-specific endpoint as per new requirements.
+// Note: The CHAT_API_BASE_URL is hardcoded to 'http://localhost:8090' based on the curl command provided.
+// The response type ChatMessageResponse is assumed to be the same.
+export async function postChatMessage(sessionId: string, messageText: string): Promise<ChatMessageResponse> {
+  const CHAT_API_BASE_URL = 'http://localhost:8090'; // Base URL for the chat service
 
-  const response = await fetch(`${API_BASE_URL}/projects/${projectId}/chat/`, {
+  const formData = new FormData();
+  formData.append('message', messageText);
+
+  const response = await fetch(`${CHAT_API_BASE_URL}/chat/${sessionId}/message`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: formData,
+    // Content-Type header is not needed here; the browser sets it automatically for FormData
   });
+
+  // Assuming handleResponse and ChatMessageResponse are still appropriate for the new endpoint's response.
+  // If the response structure has changed, ChatMessageResponse and handleResponse might need adjustments.
   return handleResponse<ChatMessageResponse>(response);
 }
 
-
-export async function getChatHistory(projectId: number): Promise<ChatMessageResponse[]> {
-  const response = await fetch(`${API_BASE_URL}/projects/${projectId}/chat/`);
-  return handleResponse<ChatMessageResponse[]>(response);
+// Updated to use the new endpoint and accept chat_session_id
+export async function getChatHistory(chat_session_id: string): Promise<ChatHistoryResponse> {
+  const CHAT_API_BASE_URL = 'http://localhost:8090'; // Base URL for the chat service
+  const response = await fetch(`${CHAT_API_BASE_URL}/chat/${chat_session_id}/history`);
+  return handleResponse<ChatHistoryResponse>(response);
 }

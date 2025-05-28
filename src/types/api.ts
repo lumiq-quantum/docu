@@ -1,8 +1,8 @@
-
 export interface ProjectResponse {
   id: number;
   name: string;
   total_pages: number;
+  chat_session_id: string; // Added chat_session_id
   created_at: string; // ISO date string
 }
 
@@ -68,4 +68,28 @@ export type FormValues = Record<string, string | boolean | number | string[]>;
 // New type based on OpenAPI spec
 export interface GeneratedHtmlResponse {
   html_content: string;
+}
+
+export interface ChatMessage {
+  id: string | number; // Unique identifier for the message
+  role: "user" | "model"; // Role of the message sender
+  content: string; // Content of the message
+  timestamp: string; // ISO string format for when the message was created/received
+  file_uri?: string | null;
+  file_mime_type?: string | null;
+}
+
+export interface ChatSessionInfo {
+  id: string;
+  title: string;
+  created_at: string;
+}
+
+export interface ChatHistoryResponse {
+  session: ChatSessionInfo;
+  messages: ChatMessage[];
+}
+
+export interface FormField {
+  // ...existing properties
 }

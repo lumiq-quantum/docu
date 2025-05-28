@@ -1,11 +1,9 @@
-
 "use client";
 
 import { useState, useEffect, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { answerQuestionsAboutDocument } from '@/ai/flows/answer-questions-about-document';
-import { postChatMessage, getChatHistory } from '@/lib/api';
-import type { ChatMessageResponse, ChatMessageCreate } from '@/types/api';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'; // Removed UseQueryOptions as it's not needed for direct options passing
+import { postChatMessage, getChatHistory, getProject } from '@/lib/api';
+import type { ChatMessage, ChatMessageResponse, ChatHistoryResponse, ProjectResponse, ChatSessionInfo } from '@/types/api';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -20,21 +18,75 @@ interface ChatbotPanelProps {
   projectId: number;
 }
 
-// Type for mutation input, including optional tempId for optimistic updates
-type ChatMessageCreateWithTempId = ChatMessageCreate & { tempId?: string };
+// Temporary type for messages in UI to handle optimistic updates with temp ID
+interface DisplayChatMessage extends ChatMessage {
+  _tempId?: string; // For optimistic updates
+}
+
+// Input type for saveMessageMutation
+type SaveMessageMutationInput = {
+  messageText: string;
+  tempId: string; // The _tempId of the message being saved
+  role: 'user' | 'model'; // To know which message (user or AI) this save pertains to
+};
 
 export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
   const [userInput, setUserInput] = useState('');
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
-  const { data: chatHistory = [], isLoading: isLoadingHistory, error: historyError } = useQuery<ChatMessageResponse[], Error>({
-    queryKey: ['chatHistory', projectId],
-    queryKeyHash: `chatHistory-${projectId}`,
-    queryFn: () => getChatHistory(projectId),
+  // Fetch project details to get chat_session_id
+  const { data: projectData, isLoading: isLoadingProject, error: projectError } = useQuery<ProjectResponse, Error, ProjectResponse, readonly ['project', number]>({
+    queryKey: ['project', projectId] as const,
+    queryFn: () => getProject(projectId),
     enabled: !!projectId,
+    // onSuccess and onError callbacks removed from here
   });
+
+  // Effect to handle successful project data fetching
+  useEffect(() => {
+    if (projectData) {
+      if (projectData.chat_session_id) {
+        setSessionId(projectData.chat_session_id);
+      } else {
+        const newSessionId = crypto.randomUUID();
+        setSessionId(newSessionId);
+        console.warn('Chat session ID not found in project data. Using a new temporary session ID:', newSessionId);
+        toast({ title: "Chat Info", description: "No existing chat session found for this project. Starting a new one.", variant: "default" });
+      }
+    }
+  }, [projectData, toast]);
+
+  // Effect to handle errors during project data fetching
+  useEffect(() => {
+    if (projectError) {
+      const newSessionId = crypto.randomUUID();
+      setSessionId(newSessionId);
+      console.error("Error fetching project data for chat session ID:", projectError);
+      toast({ title: "Error", description: `Could not load project data: ${projectError.message}. Using temporary session ID: ${newSessionId}.`, variant: "destructive" });
+    }
+  }, [projectError, toast]);
+
+  const { data: chatHistoryData, isLoading: isLoadingHistory, error: historyError } = useQuery<ChatHistoryResponse, Error, ChatHistoryResponse, readonly ['chatHistory', string | null]>({
+    queryKey: ['chatHistory', sessionId] as const,
+    queryFn: async (): Promise<ChatHistoryResponse> => {
+      if (!sessionId) {
+        const tempSessionInfo: ChatSessionInfo = {
+          id: 'temp-session-id', // This will be the effective session ID for this temporary state
+          title: 'Temporary Session',
+          created_at: new Date().toISOString(),
+          // updated_at is not part of ChatSessionInfo as per latest type definition
+        };
+        return { session: tempSessionInfo, messages: [] };
+      }
+      return getChatHistory(sessionId);
+    },
+    enabled: !!sessionId,
+  });
+
+  const chatMessages: DisplayChatMessage[] = chatHistoryData?.messages.map(m => ({ ...m })) || [];
 
   const scrollToBottom = () => {
     if (scrollAreaRef.current) {
@@ -47,86 +99,130 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
 
   useEffect(() => {
     scrollToBottom();
-  }, [chatHistory]);
+  }, [chatMessages.length]);
 
-  const saveMessageMutation = useMutation<ChatMessageResponse, Error, ChatMessageCreateWithTempId>({
-    mutationFn: (messageDataWithTempId) => {
-      const { tempId, ...actualMessageData } = messageDataWithTempId;
-      return postChatMessage(projectId, actualMessageData);
+  // Mutation to save a message (user or AI) to the backend via postChatMessage
+  // postChatMessage is expected to return the persisted message, which might have a new ID or structure.
+  // For now, assuming ChatMessageResponse is { id: number, message: string, is_user_message: 0 | 1, ... }
+  // This needs to align with what postChatMessage actually returns for the new API.
+  // The new API for postChatMessage takes (sessionId, messageText) and returns ChatMessageResponse.
+  // Let's assume ChatMessageResponse is { id: string | number, message: string, is_user_message: 0 | 1, created_at: string, project_id: number }
+  // We need to map this back to our DisplayChatMessage structure if needed.
+  const saveMessageMutation = useMutation<ChatMessageResponse, Error, SaveMessageMutationInput>({
+    mutationFn: (data) => {
+      if (!sessionId) return Promise.reject(new Error("Session ID not available for saving message."));
+      return postChatMessage(sessionId, data.messageText);
     },
-    onSuccess: (savedMessage, variables) => {
-      queryClient.setQueryData(['chatHistory', projectId], (oldHistory: ChatMessageResponse[] = []) => {
-        if (variables.tempId) {
-          return oldHistory.map(msg => msg.id.toString() === variables.tempId ? savedMessage : msg);
-        }
-        return [...oldHistory, savedMessage];
+    onSuccess: (savedMessageBackend, variables) => {
+      queryClient.setQueryData<ChatHistoryResponse | undefined>(['chatHistory', sessionId], (oldData) => {
+        if (!oldData) return oldData;
+        const updatedMessages = oldData.messages.map(msg => {
+          const displayMsg = msg as DisplayChatMessage;
+          if (displayMsg._tempId === variables.tempId) {
+            return {
+              id: savedMessageBackend.id.toString(), // Ensure ID is string if ChatMessage expects string
+              role: variables.role,
+              content: savedMessageBackend.message,
+              timestamp: savedMessageBackend.created_at,
+            } as ChatMessage;
+          }
+          return msg;
+        });
+        return { ...oldData, messages: updatedMessages };
       });
       scrollToBottom();
     },
     onError: (error, variables) => {
-      toast({ title: "Error", description: `Failed to save ${variables.is_user_message ? "your" : "AI"} message: ${error.message}`, variant: "destructive" });
-       if (variables.tempId) {
-         queryClient.setQueryData(['chatHistory', projectId], (oldHistory: ChatMessageResponse[] = []) => 
-           oldHistory.filter(msg => msg.id.toString() !== variables.tempId)
-         );
-       }
+      toast({ title: "Error Saving Message", description: `Failed to save ${variables.role} message: ${error.message}`, variant: "destructive" });
+      queryClient.setQueryData<ChatHistoryResponse | undefined>(['chatHistory', sessionId], (oldData) => {
+        if (!oldData) return oldData;
+        const filteredMessages = oldData.messages.filter(msg => (msg as DisplayChatMessage)._tempId !== variables.tempId);
+        return { ...oldData, messages: filteredMessages };
+      });
     },
   });
 
-  const aiResponseMutation = useMutation({
-    mutationFn: async (question: string) => {
-      const tempUserMessageId = `temp-user-${Date.now()}`;
-      const userMessageForDisplay: ChatMessageResponse = {
-        id: tempUserMessageId as any, 
-        message: question,
-        is_user_message: 1,
-        created_at: new Date().toISOString(),
-        project_id: projectId,
-      };
-      queryClient.setQueryData(['chatHistory', projectId], (old: ChatMessageResponse[] = []) => [...old, userMessageForDisplay]);
-      scrollToBottom();
-      
-      saveMessageMutation.mutate({ message: question, is_user_message: 1, tempId: tempUserMessageId });
+  // Placeholder for actual AI response generation logic
+  const generateAiResponse = async (question: string, currentProjectId: number, currentSessionId: string): Promise<{ answer: string }> => {
+    console.log(`AI generating response for: "${question}" in project ${currentProjectId} session ${currentSessionId}`);
+    await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate delay
+    return { answer: `AI mock response to: "${question}"` };
+  };
 
-      return answerQuestionsAboutDocument({ projectId, question });
+  // Mutation to handle sending a user message and getting an AI response
+  const aiResponseMutation = useMutation<{ answer: string }, Error, string>({
+    mutationFn: async (question: string) => {
+      if (!sessionId) throw new Error("Session ID not available for AI response.");
+
+      const tempUserMessageId = `temp-user-${crypto.randomUUID()}`;
+      const userMessageForDisplay: DisplayChatMessage = {
+        _tempId: tempUserMessageId,
+        id: tempUserMessageId, // Temporary ID for display, will be replaced by backend ID on save
+        role: 'user',
+        content: question,
+        timestamp: new Date().toISOString(),
+      };
+
+      queryClient.setQueryData<ChatHistoryResponse | undefined>(['chatHistory', sessionId], (oldData) => {
+        const messages = oldData?.messages || [];
+        const sessionInfo = oldData?.session || { id: sessionId, title: 'Chat Session', created_at: new Date().toISOString() }; 
+        return { session: sessionInfo, messages: [...messages, userMessageForDisplay] };
+      });
+      scrollToBottom();
+
+      // Save user message to backend
+      saveMessageMutation.mutate({ messageText: question, tempId: tempUserMessageId, role: 'user' });
+
+      // Get AI response
+      const aiResult = await generateAiResponse(question, projectId, sessionId);
+      return aiResult;
     },
     onSuccess: (aiResult) => {
-      const tempAiMessageId = `temp-ai-${Date.now()}`;
-      const aiMessageForDisplay: ChatMessageResponse = {
-        id: tempAiMessageId as any,
-        message: aiResult.answer,
-        is_user_message: 0,
-        created_at: new Date().toISOString(),
-        project_id: projectId,
+      if (!sessionId) return; // Should be caught by mutationFn check
+
+      const tempAiMessageId = `temp-ai-${crypto.randomUUID()}`;
+      const aiMessageForDisplay: DisplayChatMessage = {
+        _tempId: tempAiMessageId,
+        id: tempAiMessageId, // Temporary ID for display
+        role: 'model', // Use 'model' for AI responses
+        content: aiResult.answer,
+        timestamp: new Date().toISOString(),
       };
-      queryClient.setQueryData(['chatHistory', projectId], (old: ChatMessageResponse[] = []) => [...old, aiMessageForDisplay]);
+
+      queryClient.setQueryData<ChatHistoryResponse | undefined>(['chatHistory', sessionId], (oldData) => {
+        const messages = oldData?.messages || [];
+        const sessionInfo = oldData?.session || { id: sessionId, title: 'Chat Session', created_at: new Date().toISOString() }; // Fallback session info
+        return { session: sessionInfo, messages: [...messages, aiMessageForDisplay] };
+      });
       scrollToBottom();
-      
-      saveMessageMutation.mutate({ message: aiResult.answer, is_user_message: 0, tempId: tempAiMessageId });
+
+      // Save AI message to backend
+      saveMessageMutation.mutate({ messageText: aiResult.answer, tempId: tempAiMessageId, role: 'model' });
     },
     onError: (error: Error) => {
       toast({ title: "AI Error", description: error.message || "Failed to get AI response.", variant: "destructive" });
     },
   });
 
-
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userInput.trim() || aiResponseMutation.isPending) return;
-    
+    if (!userInput.trim() || aiResponseMutation.isPending || !sessionId || isLoadingProject) return;
     const currentInput = userInput.trim();
-    setUserInput(''); 
+    setUserInput('');
     aiResponseMutation.mutate(currentInput);
   };
 
-  if (isLoadingHistory) {
+  // Combined loading state for initial setup (project loading OR session ID not yet set AND no project error)
+  const isInitialLoading = isLoadingProject || (!sessionId && !projectError);
+
+  if (isInitialLoading) {
     return (
-       <Card className="h-full flex flex-col">
+      <Card className="h-full flex flex-col">
         <CardHeader><CardTitle>Chatbot</CardTitle></CardHeader>
         <CardContent className="flex-grow p-4 space-y-4">
-          <Skeleton className="h-12 w-3/4 self-start rounded-lg" />
-          <Skeleton className="h-16 w-3/4 self-end rounded-lg" />
           <Skeleton className="h-10 w-full self-start rounded-lg" />
+          <Skeleton className="h-12 w-3/4 self-start rounded-lg mt-4" />
+          <Skeleton className="h-16 w-3/4 self-end rounded-lg" />
         </CardContent>
         <CardFooter className="p-4 border-t">
           <Skeleton className="h-10 flex-grow mr-2" />
@@ -136,12 +232,33 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
     );
   }
 
-  if (historyError) {
-     return (
-       <Card className="h-full flex flex-col">
+  // Loading state for chat history, only if session ID is available and not initial loading
+  if (isLoadingHistory && sessionId) {
+    return (
+      <Card className="h-full flex flex-col">
+        <CardHeader><CardTitle>Chatbot</CardTitle></CardHeader>
+        <CardContent className="flex-grow p-4 space-y-4">
+          {/* Show existing messages if any, then skeletons for loading more */}
+          {chatMessages.map((msg, index) => (
+             <div key={msg._tempId || msg.id || `msg-${index}`} className={cn("flex items-end gap-2 max-w-[85%]", msg.role === 'user' ? "ml-auto flex-row-reverse" : "mr-auto")}> <Avatar className="h-8 w-8"><AvatarImage src={msg.role === 'user' ? undefined : "/placeholder-bot.png"} /><AvatarFallback>{msg.role === 'user' ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}</AvatarFallback></Avatar> <div className={cn("rounded-lg px-3 py-2 text-sm shadow", msg.role === 'user' ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>{msg.content}</div></div>
+          ))}
+          <Skeleton className="h-12 w-3/4 self-start rounded-lg" />
+          <Skeleton className="h-16 w-3/4 self-end rounded-lg" />
+        </CardContent>
+        <CardFooter className="p-4 border-t">
+          <Skeleton className="h-10 flex-grow mr-2" />
+          <Skeleton className="h-10 w-20" />
+        </CardFooter>
+      </Card>
+    );
+  }
+
+  if (historyError && sessionId) {
+    return (
+      <Card className="h-full flex flex-col">
         <CardHeader><CardTitle>Chatbot</CardTitle></CardHeader>
         <CardContent className="flex-grow flex items-center justify-center">
-           <div className="text-destructive text-center">
+          <div className="text-destructive text-center">
             <AlertTriangle className="h-8 w-8 mx-auto mb-2" />
             <p className="font-semibold">Error loading chat history</p>
             <p className="text-sm">{historyError.message}</p>
@@ -154,43 +271,41 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
   return (
     <Card className="h-full flex flex-col">
       <CardHeader>
-        <CardTitle>AI Chatbot</CardTitle>
+        <CardTitle>AI Chatbot {projectData?.name ? `for ${projectData.name}` : ''}</CardTitle>
+        {sessionId && <p className="text-xs text-muted-foreground">Session: {chatHistoryData?.session?.title || (chatHistoryData?.session?.id ? 'ID: ' + chatHistoryData.session.id : 'Loading session...')}</p>}
       </CardHeader>
       <CardContent className="flex-grow overflow-hidden p-0">
         <ScrollArea className="h-full p-4" ref={scrollAreaRef}>
           <div className="space-y-4">
-            {chatHistory.map((msg) => (
+            {chatMessages.map((msg, index) => (
               <div
-                key={msg.id}
+                key={msg._tempId || msg.id || `msg-${index}-${msg.role}-${msg.timestamp}`}
                 className={cn(
                   "flex items-end gap-2 max-w-[85%]",
-                  msg.is_user_message ? "ml-auto flex-row-reverse" : "mr-auto"
+                  msg.role === 'user' ? "ml-auto flex-row-reverse" : "mr-auto"
                 )}
               >
                 <Avatar className="h-8 w-8">
-                  <AvatarImage src={msg.is_user_message ? undefined : "/placeholder-bot.png"} data-ai-hint="robot face" />
+                  <AvatarImage src={msg.role === 'user' ? undefined : "/placeholder-bot.png"} />
                   <AvatarFallback>
-                    {msg.is_user_message ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
+                    {msg.role === 'user' ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
                   </AvatarFallback>
                 </Avatar>
                 <div
                   className={cn(
                     "rounded-lg px-3 py-2 text-sm shadow",
-                    msg.is_user_message
+                    msg.role === 'user'
                       ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-muted-foreground" // Changed from bg-card to bg-muted for AI messages for better contrast
+                      : "bg-muted text-muted-foreground"
                   )}
                 >
-                  {msg.message}
+                  {msg.content}
                 </div>
               </div>
             ))}
-            {aiResponseMutation.isPending && !saveMessageMutation.isPending && ( // Show AI thinking indicator only if not already saving a message (which might include its own loader)
+            {aiResponseMutation.isPending && (
               <div className="flex items-end gap-2 max-w-[85%] mr-auto">
-                 <Avatar className="h-8 w-8">
-                  <AvatarImage src="/placeholder-bot.png" data-ai-hint="robot face" />
-                  <AvatarFallback><Bot className="h-4 w-4" /></AvatarFallback>
-                </Avatar>
+                <Avatar className="h-8 w-8"><AvatarImage src="/placeholder-bot.png" /><AvatarFallback><Bot className="h-4 w-4" /></AvatarFallback></Avatar>
                 <div className="rounded-lg px-3 py-2 text-sm shadow bg-muted text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
                 </div>
@@ -203,16 +318,18 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
         <form onSubmit={handleSendMessage} className="flex w-full items-center space-x-2">
           <Input
             type="text"
-            placeholder="Ask about the document..."
+            placeholder={sessionId ? "Ask about the document..." : "Initializing chat..."}
             value={userInput}
             onChange={(e) => setUserInput(e.target.value)}
-            disabled={aiResponseMutation.isPending || saveMessageMutation.isPending}
+            disabled={aiResponseMutation.isPending || saveMessageMutation.isPending || !sessionId || isLoadingProject}
             className="flex-grow"
           />
-          <Button type="submit" size="icon" disabled={aiResponseMutation.isPending || saveMessageMutation.isPending || !userInput.trim()}>
-            { (aiResponseMutation.isPending && !saveMessageMutation.isPending && !chatHistory.find(m => m.id.toString().startsWith("temp-ai")))  // More precise loading state for send button
-              ? <Loader2 className="h-4 w-4 animate-spin" /> 
-              : <Send className="h-4 w-4" />}
+          <Button 
+            type="submit" 
+            size="icon" 
+            disabled={aiResponseMutation.isPending || saveMessageMutation.isPending || !userInput.trim() || !sessionId || isLoadingProject}
+          >
+            {aiResponseMutation.isPending ? <Loader2 className="h-4 w-4" /> : <Send className="h-4 w-4" />}
             <span className="sr-only">Send</span>
           </Button>
         </form>
