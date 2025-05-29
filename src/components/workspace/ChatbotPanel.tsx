@@ -267,6 +267,26 @@ export function ChatbotPanel({ projectId }: ChatbotPanelProps) {
             ))}
             {/* Removed AI response pending loader (aiResponseMutation.isPending) */}
             {/* isLoadingHistory will cover loading states during refetch */}
+            {/* Show AI thinking indicator when user's message is sent and history is being refetched for AI's response */}
+            {!saveMessageMutation.isPending && isLoadingHistory && (
+              <div className={cn("flex items-end gap-2 max-w-[85%]", "mr-auto")}>
+                <Avatar className="h-8 w-8">
+                  Thinking
+                  <AvatarImage src="/placeholder-bot.png" />
+                  <AvatarFallback>
+                    <Bot className="h-4 w-4" />
+                  </AvatarFallback>
+                </Avatar>
+                <div
+                  className={cn(
+                    "rounded-lg px-3 py-2 text-sm shadow",
+                    "bg-muted text-muted-foreground"
+                  )}
+                >
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                </div>
+              </div>
+            )}
           </div>
         </ScrollArea>
       </CardContent>
